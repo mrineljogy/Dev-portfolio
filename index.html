@@ -409,6 +409,7 @@ nav{
 <body>
 
 <!-- NAV -->
+ <canvas id="colorbends-bg" style="position:fixed;top:0;left:0;width:100%;height:100%;z-index:-1;pointer-events:none;"></canvas>
 <nav>
   <div class="nav-container">
     <button class="nav-toggle" id="navToggle" onclick="toggleNav()" aria-label="Toggle navigation">
@@ -920,6 +921,138 @@ function closeCreativeModal(){
   document.body.style.overflow = '';
 }
 document.addEventListener('keydown', e => { if(e.key==='Escape'){ closeModal(); closeNav(); closeCreativeModal(); } });
+</script>
+<script type="module">
+import * as THREE from 'https://cdn.jsdelivr.net/npm/three@0.157.0/build/three.module.js';
+
+(function(){
+  const canvas = document.getElementById('colorbends-bg');
+  const colors = ["#7c3aed","#a855f7","#06b6d4","#8b5cf6","#0ea5e9","#6366f1"];
+  const MAX_COLORS = 8;
+
+  const frag = `
+#define MAX_COLORS ${MAX_COLORS}
+precision highp float;
+uniform vec2 uCanvas;uniform float uTime;uniform float uSpeed;uniform vec2 uRot;
+uniform int uColorCount;uniform vec3 uColors[MAX_COLORS];uniform int uTransparent;
+uniform float uScale;uniform float uFrequency;uniform float uWarpStrength;
+uniform vec2 uPointer;uniform float uMouseInfluence;uniform float uParallax;
+uniform float uNoise;uniform int uIterations;uniform float uIntensity;uniform float uBandWidth;
+varying vec2 vUv;
+void main(){
+  float t=uTime*uSpeed;
+  vec2 p=vUv*2.0-1.0;
+  p+=uPointer*uParallax*0.1;
+  vec2 rp=vec2(p.x*uRot.x-p.y*uRot.y,p.x*uRot.y+p.y*uRot.x);
+  vec2 q=vec2(rp.x*(uCanvas.x/uCanvas.y),rp.y);
+  q/=max(uScale,0.0001);
+  q/=0.5+0.2*dot(q,q);
+  q+=0.2*cos(t)-7.56;
+  vec2 toward=(uPointer-rp);
+  q+=toward*uMouseInfluence*0.2;
+  for(int j=0;j<5;j++){
+    if(j>=uIterations-1)break;
+    vec2 rr=sin(1.5*(q.yx*uFrequency)+2.0*cos(q*uFrequency));
+    q+=(rr-q)*0.15;
+  }
+  vec3 col=vec3(0.0);float a=1.0;
+  if(uColorCount>0){
+    vec2 s=q;vec3 sumCol=vec3(0.0);float cover=0.0;
+    for(int i=0;i<MAX_COLORS;++i){
+      if(i>=uColorCount)break;
+      s-=0.01;
+      vec2 r=sin(1.5*(s.yx*uFrequency)+2.0*cos(s*uFrequency));
+      float m0=length(r+sin(5.0*r.y*uFrequency-3.0*t+float(i))/4.0);
+      float kBelow=clamp(uWarpStrength,0.0,1.0);
+      float kMix=pow(kBelow,0.3);
+      float gain=1.0+max(uWarpStrength-1.0,0.0);
+      vec2 disp=(r-s)*kBelow;
+      vec2 warped=s+disp*gain;
+      float m1=length(warped+sin(5.0*warped.y*uFrequency-3.0*t+float(i))/4.0);
+      float m=mix(m0,m1,kMix);
+      float w=1.0-exp(-uBandWidth/exp(uBandWidth*m));
+      sumCol+=uColors[i]*w;cover=max(cover,w);
+    }
+    col=clamp(sumCol,0.0,1.0);a=1.0;
+  }
+  col*=uIntensity;
+  if(uNoise>0.0001){
+    float n=fract(sin(dot(gl_FragCoord.xy+vec2(uTime),vec2(12.9898,78.233)))*43758.5453123);
+    col+=(n-0.5)*uNoise;col=clamp(col,0.0,1.0);
+  }
+  gl_FragColor=vec4(col,a);
+}`;
+
+  const vert = `varying vec2 vUv;void main(){vUv=uv;gl_Position=vec4(position,1.0);}`;
+
+  const renderer = new THREE.WebGLRenderer({canvas, alpha:false, antialias:false});
+  renderer.setPixelRatio(Math.min(window.devicePixelRatio||1,2));
+  renderer.outputColorSpace = THREE.SRGBColorSpace;
+  renderer.setClearColor(0x0c0c0c, 1);
+
+  const scene = new THREE.Scene();
+  const camera = new THREE.OrthographicCamera(-1,1,1,-1,0,1);
+
+  function hexToVec3(hex){
+    const h=hex.replace('#','');
+    return new THREE.Vector3(parseInt(h.slice(0,2),16)/255,parseInt(h.slice(2,4),16)/255,parseInt(h.slice(4,6),16)/255);
+  }
+
+  const uColorsArr = Array.from({length:MAX_COLORS},()=>new THREE.Vector3(0,0,0));
+  const arr = colors.slice(0,MAX_COLORS).map(hexToVec3);
+  arr.forEach((v,i)=>uColorsArr[i].copy(v));
+
+  const material = new THREE.ShaderMaterial({
+    vertexShader:vert, fragmentShader:frag,
+    uniforms:{
+      uCanvas:{value:new THREE.Vector2(window.innerWidth,window.innerHeight)},
+      uTime:{value:0}, uSpeed:{value:0.18},
+      uRot:{value:new THREE.Vector2(1,0)},
+      uColorCount:{value:arr.length},
+      uColors:{value:uColorsArr},
+      uTransparent:{value:0},
+      uScale:{value:0.9}, uFrequency:{value:1.2},
+      uWarpStrength:{value:1.2},
+      uPointer:{value:new THREE.Vector2(0,0)},
+      uMouseInfluence:{value:0.4}, uParallax:{value:0.3},
+      uNoise:{value:0.04}, uIterations:{value:2},
+      uIntensity:{value:0.55}, uBandWidth:{value:6}
+    },
+    transparent:false
+  });
+
+  const mesh = new THREE.Mesh(new THREE.PlaneGeometry(2,2), material);
+  scene.add(mesh);
+
+  function resize(){
+    const w=window.innerWidth, h=window.innerHeight;
+    renderer.setSize(w,h,false);
+    material.uniforms.uCanvas.value.set(w,h);
+  }
+  window.addEventListener('resize', resize);
+  resize();
+
+  const pointer = {tx:0,ty:0,cx:0,cy:0};
+  window.addEventListener('mousemove', e=>{
+    pointer.tx = (e.clientX/window.innerWidth)*2-1;
+    pointer.ty = -(((e.clientY/window.innerHeight)*2)-1);
+  });
+
+  const clock = new THREE.Clock();
+  function animate(){
+    requestAnimationFrame(animate);
+    const dt = clock.getDelta();
+    pointer.cx += (pointer.tx-pointer.cx)*Math.min(1,dt*6);
+    pointer.cy += (pointer.ty-pointer.cy)*Math.min(1,dt*6);
+    material.uniforms.uPointer.value.set(pointer.cx,pointer.cy);
+    material.uniforms.uTime.value = clock.elapsedTime;
+    const deg = 110 + clock.elapsedTime*2;
+    const rad = deg*Math.PI/180;
+    material.uniforms.uRot.value.set(Math.cos(rad),Math.sin(rad));
+    renderer.render(scene,camera);
+  }
+  animate();
+})();
 </script>
 </body>
 </html>
